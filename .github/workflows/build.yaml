@@ -68,7 +68,9 @@ jobs:
         id: repro
         run: |
           mv dist/*.tar.gz /tmp/first.tar.gz
-          rm -rf packages/*/.work dist
+          # build.py clears its own work directory, which the build container
+          # may have written as root.
+          rm -rf dist
           python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
           if cmp -s /tmp/first.tar.gz dist/*.tar.gz; then
             echo "reproducible=true" >> "$GITHUB_OUTPUT"

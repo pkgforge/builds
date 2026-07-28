@@ -56,6 +56,27 @@ def fetch_url(url: str, sha256: str, dest: Path) -> None:
         sys.exit(f"hash mismatch for {url}\n  want {sha256}\n  got  {got}")
 
 
+def remove_tree(path: Path, runtime: str, image: str) -> None:
+    """Remove a work directory left by a previous build.
+
+    Deps are installed at build time, so the container runs as root. Under a
+    rootful runtime that leaves files the caller cannot delete, and the
+    removal has to happen as root inside the image.
+    """
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except PermissionError:
+        run([
+            runtime, "run", "--rm",
+            "-v", f"{path.parent.resolve()}:/w:z",
+            "-w", "/w",
+            image,
+            "rm", "-rf", path.name,
+        ])
+
+
 def fetch_source(spec: dict, dest: Path) -> None:
     if dest.exists():
         shutil.rmtree(dest)
@@ -93,6 +114,7 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
 
     work = pkg_dir / ".work"
     repo = work / "src"
+    remove_tree(repo, runtime, b["image"])
     fetch_source(src, repo)
     # A git source dates itself from its commit. A pinned artifact has no
     # commit, so the definition states the epoch explicitly.
