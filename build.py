@@ -45,10 +45,32 @@ def source_epoch(repo: Path) -> str:
     return out.stdout.strip()
 
 
+def fetch_url(url: str, sha256: str, dest: Path) -> None:
+    """Download and verify. A build input is pinned the same way a package is."""
+    import urllib.request
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=300) as r, open(dest, "wb") as fh:
+        shutil.copyfileobj(r, fh)
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    if got != sha256:
+        sys.exit(f"hash mismatch for {url}\n  want {sha256}\n  got  {got}")
+
+
 def fetch_source(spec: dict, dest: Path) -> None:
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
+
+    # A source can be a git commit or a pinned release artifact; the second
+    # is for packages that repackage an upstream binary rather than compile.
+    if "url" in spec:
+        archive = dest / "source-archive"
+        fetch_url(spec["url"], spec["sha256"], archive)
+        with tarfile.open(archive) as tf:
+            tf.extractall(dest, filter="data")
+        archive.unlink()
+        return
+
     run(["git", "init", "-q", str(dest)])
     run(["git", "-C", str(dest), "remote", "add", "origin", spec["git"]])
     # Fetch just the pinned commit rather than cloning history.
@@ -72,7 +94,20 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
     work = pkg_dir / ".work"
     repo = work / "src"
     fetch_source(src, repo)
-    epoch = source_epoch(repo)
+    # A git source dates itself from its commit. A pinned artifact has no
+    # commit, so the definition states the epoch explicitly.
+    epoch = source_epoch(repo) if "git" in src else str(src.get("epoch", 0))
+
+    # Tools are build inputs too, and are pinned by hash like everything else.
+    tools = work / "tools"
+    if cfg.get("tool"):
+        if tools.exists():
+            shutil.rmtree(tools)
+        tools.mkdir(parents=True)
+        for t in cfg["tool"]:
+            path = tools / t["name"]
+            fetch_url(t["url"], t["sha256"], path)
+            path.chmod(0o755)
 
     env = [
         "-e", f"TARGET={target}",
@@ -86,24 +121,45 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
         env += ["-e", f"{k}={v}"]
 
     deps = b.get("deps") or []
-    prelude = f"apk add --no-cache {' '.join(deps)}\n" if deps else ""
+    installer = b.get("deps_via", "apk")
+    if not deps:
+        prelude = ""
+    elif installer == "apt":
+        prelude = ("export DEBIAN_FRONTEND=noninteractive\n"
+                   "apt-get update -qq\n"
+                   f"apt-get install -y --no-install-recommends {' '.join(deps)}\n")
+    else:
+        prelude = f"apk add --no-cache {' '.join(deps)}\n"
     script = prelude + b["script"]["run"]
     print(f"building {name} {src['version']} for {host} ({target})")
+    mounts = ["-v", f"{repo.resolve()}:{WORKDIR}:z"]
+    if cfg.get("tool"):
+        mounts += ["-v", f"{tools.resolve()}:/tools:z"]
+        env += ["-e", "PATH=/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+
     run([
         runtime, "run", "--rm",
-        "-v", f"{repo.resolve()}:{WORKDIR}:z",
+        *mounts,
         "-w", WORKDIR,
         *env,
         b["image"],
         "sh", "-euc", script,
     ])
 
+    # Pinned side files that the upstream artifact does not ship, typically
+    # a licence. Fetched outside the container, verified like any input.
+    for e in cfg.get("extra") or []:
+        fetch_url(e["url"], e["sha256"], repo / e["to"])
+
     # Collect declared artifacts under their published names.
     stage = work / "stage"
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    for frm, to in cfg["artifact"].items():
+    published = dict(cfg["artifact"])
+    for e in cfg.get("extra") or []:
+        published[e["to"]] = e["to"]
+    for frm, to in published.items():
         path = repo / frm.replace("${target}", target)
         if not path.is_file():
             sys.exit(f"artifact not produced: {frm} -> {path}")

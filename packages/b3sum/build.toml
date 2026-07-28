@@ -1,0 +1,35 @@
+[pkg]
+name        = "b3sum"
+description = "BLAKE3 cryptographic hash function command line utility"
+homepage    = ["https://github.com/BLAKE3-team/BLAKE3"]
+license     = ["CC0-1.0", "Apache-2.0"]
+maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
+reason      = "upstream publishes an x86_64 binary only; aarch64 has none"
+
+[source]
+git     = "https://github.com/BLAKE3-team/BLAKE3"
+commit  = "93a431c78a52d7ccf0f366f106467f5070e6075e"
+version = "1.8.5"
+
+[build]
+image = "docker.io/library/rust@sha256:b4b54b176a74db7e5c68fdfe6029be39a02ccbcfe72b6e5a3e18e2c61b57ae26"
+hosts = ["x86_64-linux", "aarch64-linux"]
+deps  = ["musl-dev"]
+
+[build.target]
+x86_64-linux  = "x86_64-unknown-linux-musl"
+aarch64-linux = "aarch64-unknown-linux-musl"
+
+[build.env]
+RUSTFLAGS = "-C target-feature=+crt-static -C link-self-contained=yes"
+
+[build.script]
+run = """
+rustup target add "$TARGET"
+cd b3sum
+cargo build --release --locked --target "$TARGET"
+"""
+
+[artifact]
+"b3sum/target/${target}/release/b3sum" = "b3sum"
+"LICENSE_A2"                           = "LICENSE"
