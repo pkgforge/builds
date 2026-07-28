@@ -38,7 +38,10 @@ So every build fixes the things that otherwise vary between runs:
 - **normalised archive**: fixed mtime, uid/gid 0, sorted entries, and gzip's
   own header timestamp pinned to 0
 
-`eza` currently reproduces byte-for-byte across clean builds.
+All four packages currently reproduce byte-for-byte across clean builds. CI
+rebuilds each one a second time and compares, so a definition that stops
+reproducing is visible immediately rather than discovered by whoever tries to
+verify it later.
 
 ### The remaining gap
 
@@ -46,6 +49,45 @@ So every build fixes the things that otherwise vary between runs:
 version-pinned**, so an Alpine package update can change the result. Closing
 this means building and pinning our own base image. Until then, reproducibility
 holds within a window rather than indefinitely.
+
+## Source kinds
+
+A package either compiles from a git commit or repackages an upstream release
+artifact. Both are pinned:
+
+```toml
+[source]                      # compile from source
+git     = "https://github.com/eza-community/eza"
+commit  = "98442ab..."
+version = "0.23.5"
+```
+
+```toml
+[source]                      # repackage a published binary
+url     = "https://github.com/.../amdgpu_top-0.11.5-....tar.gz"
+sha256  = "5efd0b98..."
+version = "0.11.5"
+epoch   = 1735689600          # no commit to take a date from
+```
+
+Build tools and any side files the artifact does not ship are pinned the same
+way, because they are build inputs like everything else:
+
+```toml
+[[tool]]
+name   = "onelf"
+url    = "https://github.com/QaidVoid/onelf/releases/download/0.3.0/onelf-x86_64-linux"
+sha256 = "94127fc7..."
+
+[[extra]]
+url    = "https://raw.githubusercontent.com/.../LICENSE"
+sha256 = "a31bd088..."
+to     = "LICENSE"
+```
+
+The old `amdgpu_top` recipe fetched `onelf` from `latest`, which meant its
+output could change without the recipe changing. That is exactly the class of
+problem this repository exists to remove.
 
 ## Usage
 

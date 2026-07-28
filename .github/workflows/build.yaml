@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    paths: ['packages/**', 'build.py']
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to build; empty builds all'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish a release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: plan
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, glob, os, tomllib
+          only = os.environ.get("ONLY", "").strip()
+          jobs = []
+          for path in sorted(glob.glob("packages/*/build.toml")):
+              name = path.split("/")[1]
+              if only and name != only:
+                  continue
+              cfg = tomllib.load(open(path, "rb"))
+              for host in cfg["build"]["hosts"]:
+                  jobs.append({"package": name, "host": host,
+                               "runner": "ubuntu-24.04-arm" if host.startswith("aarch64")
+                                         else "ubuntu-latest"})
+          print("jobs=" + json.dumps(jobs))
+          EOF
+        env:
+          ONLY: ${{ inputs.package }}
+
+  build:
+    needs: matrix
+    if: needs.matrix.outputs.jobs != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJson(needs.matrix.outputs.jobs) }}
+    runs-on: ${{ matrix.job.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build
+        id: build
+        run: python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
+
+      # The point of pinning everything is that a second run agrees. If it
+      # does not, the definition is not yet reproducible and that should be
+      # visible rather than discovered by a third party later.
+      - name: Rebuild and compare
+        id: repro
+        run: |
+          mv dist/*.tar.gz /tmp/first.tar.gz
+          rm -rf packages/*/.work dist
+          python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
+          if cmp -s /tmp/first.tar.gz dist/*.tar.gz; then
+            echo "reproducible=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.job.package }} ${{ matrix.job.host }} reproduces byte-for-byte"
+          else
+            echo "reproducible=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${{ matrix.job.package }} ${{ matrix.job.host }} is NOT reproducible"
+          fi
+
+      - name: Attest provenance
+        if: inputs.publish
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Publish
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pkg="${{ matrix.job.package }}"
+          ver=$(python3 -c "import tomllib;print(tomllib.load(open('packages/$pkg/build.toml','rb'))['source']['version'])")
+          tag="${pkg}-${ver}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "$tag" --notes "Reproducible: ${{ steps.repro.outputs.reproducible }}"
+          gh release upload "$tag" dist/*.tar.gz --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.job.package }} (${{ matrix.job.host }})"
+            echo
+            echo '```'
+            sha256sum dist/*.tar.gz
+            echo "reproducible: ${{ steps.repro.outputs.reproducible }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
