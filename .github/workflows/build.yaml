@@ -13,6 +13,10 @@ on:
         description: 'Publish a release'
         type: boolean
         default: false
+      force:
+        description: 'Rebuild even if the version is already published'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,14 +33,24 @@ jobs:
       - id: plan
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import json, glob, os, tomllib
+          import json, glob, os, subprocess, sys, tomllib
           only = os.environ.get("ONLY", "").strip()
+          force = os.environ.get("FORCE", "").lower() == "true"
           jobs = []
           for path in sorted(glob.glob("packages/*/build.toml")):
               name = path.split("/")[1]
               if only and name != only:
                   continue
               cfg = tomllib.load(open(path, "rb"))
+              # A published version is already built and pinned downstream, so
+              # rebuilding it produces bytes nobody will use. Skipping keeps the
+              # matrix proportional to what actually changed.
+              tag = f"{name}-{cfg['source']['version']}"
+              if not force and subprocess.run(
+                      ["gh", "release", "view", tag],
+                      capture_output=True).returncode == 0:
+                  print(f"::notice::{tag} already published, skipping", file=sys.stderr)
+                  continue
               for host in cfg["build"]["hosts"]:
                   jobs.append({"package": name, "host": host,
                                "runner": "ubuntu-24.04-arm" if host.startswith("aarch64")
@@ -45,6 +59,8 @@ jobs:
           EOF
         env:
           ONLY: ${{ inputs.package }}
+          FORCE: ${{ inputs.force }}
+          GH_TOKEN: ${{ github.token }}
 
   build:
     needs: matrix
@@ -80,20 +96,41 @@ jobs:
             echo "::warning::${{ matrix.job.package }} ${{ matrix.job.host }} is NOT reproducible"
           fi
 
-      - name: Attest provenance
-        if: inputs.publish
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: dist/*.tar.gz
-
-      - name: Publish
-        if: inputs.publish
+      # A version is published once. Rebuilding an existing tag would either
+      # be a no-op or quietly replace bytes somebody has already pinned, so
+      # the tag's absence is what marks a build as new. A build that does not
+      # reproduce is held back for a human rather than published with a note.
+      - name: Decide whether to publish
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           pkg="${{ matrix.job.package }}"
           ver=$(python3 -c "import tomllib;print(tomllib.load(open('packages/$pkg/build.toml','rb'))['source']['version'])")
           tag="${pkg}-${ver}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::$tag already published, skipping"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.repro.outputs.reproducible }}" != "true" ]; then
+            echo "::warning::$tag is not reproducible, not publishing"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attest provenance
+        if: steps.gate.outputs.publish == 'true' || inputs.publish
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Publish
+        if: steps.gate.outputs.publish == 'true' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.gate.outputs.tag }}"
           gh release view "$tag" >/dev/null 2>&1 || \
             gh release create "$tag" --title "$tag" --notes "Reproducible: ${{ steps.repro.outputs.reproducible }}"
           gh release upload "$tag" dist/*.tar.gz --clobber
