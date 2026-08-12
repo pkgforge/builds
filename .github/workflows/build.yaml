@@ -119,14 +119,17 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Publishing is confined to main. A push to an update PR branch still
+      # builds and runs the reproducibility check, but a release is cut only
+      # once the bump has been reviewed and merged. Manual dispatch overrides.
       - name: Attest provenance
-        if: steps.gate.outputs.publish == 'true' || inputs.publish
+        if: (steps.gate.outputs.publish == 'true' && github.ref == 'refs/heads/main') || inputs.publish
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: dist/*.tar.gz
 
       - name: Publish
-        if: steps.gate.outputs.publish == 'true' || inputs.publish
+        if: (steps.gate.outputs.publish == 'true' && github.ref == 'refs/heads/main') || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

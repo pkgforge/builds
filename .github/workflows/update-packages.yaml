@@ -1,0 +1,70 @@
+name: Update Packages
+
+# Resolves the latest upstream version of every package and opens a PR with the
+# newly pinned lines. The diff is a few lines per package, which is the point: a
+# silently swapped upstream artifact shows up as a changed hash somebody can
+# look at before it is merged. The build workflow runs on the PR branch and is
+# what actually proves the new pin still builds and reproduces.
+
+on:
+  schedule:
+    - cron: '0 6 */3 * *'
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Space-separated package names; empty = all'
+        type: string
+        default: ''
+
+concurrency:
+  group: update-packages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve upstream versions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 update.py ${{ inputs.packages }}
+
+      - name: Summarise changes
+        id: diff
+        run: |
+          git add -A packages
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Package updates"
+            echo
+            echo '```'
+            git diff --cached -- packages
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automated/package-updates
+          title: 'chore: update pinned package versions'
+          commit-message: 'chore: update pinned package versions'
+          body: |
+            Automated version bump. Each changed file pins a resolved commit or
+            release hash at the latest upstream version.
+
+            Review the hashes: a changed hash on an *unchanged* version means
+            upstream replaced an artifact in place, which is worth
+            investigating before merging.
+          labels: automated
+          delete-branch: true
