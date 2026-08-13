@@ -10,15 +10,18 @@ idea. soarpkgs stays declarative and nothing in it executes.
 
 ## Why a package ends up here
 
-Only when pinning upstream directly is impossible. Every definition records its
-reason, because the alternative is always preferable when it exists:
+Only when pinning upstream directly is impossible. Every definition carries a
+`reason` field saying which case it is, because the alternative is always
+preferable when it exists:
 
-| package | reason |
-|---|---|
-| `eza` | upstream ships gnu-linked binaries only; soar needs static musl |
-| `b3sum` | upstream ships x86_64 only |
-| `bingrep` | upstream publishes no releases, only tags |
-| `amdgpu_top` | needs `onelf` lib bundling into cli and gui variants |
+```toml
+reason = "upstream ships gnu-linked binaries only; soar needs static musl"
+```
+
+The recurring ones are upstream shipping glibc-linked binaries, shipping only
+some architectures, or publishing no releases at all. `grep reason
+packages/*/build.toml` is the current list; it is not repeated here, because a
+list in a README is a list that goes stale.
 
 ## Reproducibility
 
@@ -38,17 +41,55 @@ So every build fixes the things that otherwise vary between runs:
 - **normalised archive**: fixed mtime, uid/gid 0, sorted entries, and gzip's
   own header timestamp pinned to 0
 
-All four packages currently reproduce byte-for-byte across clean builds. CI
-rebuilds each one a second time and compares, so a definition that stops
-reproducing is visible immediately rather than discovered by whoever tries to
-verify it later.
+A scheduled job rebuilds published packages and compares against the bytes in
+the release, so a definition that stops reproducing surfaces here rather than
+with whoever tries to verify it later. It runs on its own rather than on the
+publish path: rebuilding twice in one job, minutes apart on a single runner,
+only ever caught timestamps and paths, while doubling the work and the number
+of ways a release could fail to happen.
 
 ### The remaining gap
 
-`deps` are installed with `apk add` at build time and are **not
-version-pinned**, so an Alpine package update can change the result. Closing
-this means building and pinning our own base image. Until then, reproducibility
-holds within a window rather than indefinitely.
+`deps` are installed with `apk`/`apt` at build time and are **not
+version-pinned**, so a distribution package update can change the result.
+Closing this means building and pinning our own base image. Until then,
+reproducibility holds within a window rather than indefinitely.
+
+## What gets checked before publishing
+
+Compiling is not evidence that the result works, least of all when building for
+an architecture the builder cannot run. Every staged binary is therefore
+checked:
+
+- it is an ELF for the architecture it claims to be
+- it has no `PT_INTERP`, so it is statically linked and needs no libc on the
+  host
+- it runs, under `qemu-user` when the build host is a different architecture
+
+The last one is opt-in per package, since not every binary has a harmless flag
+to invoke:
+
+```toml
+[verify]
+run = ["--version"]
+```
+
+A binary that is dynamically linked, built for the wrong machine, or unable to
+start fails the build rather than reaching a release.
+
+## Architectures
+
+`hosts` lists what a package is built for, and a package is built only for the
+architectures upstream does not already serve. Where upstream publishes a
+static musl binary, soarpkgs pins that directly and this repository stays out
+of it.
+
+x86_64 and aarch64 build natively on their own runners. riscv64 has no runner
+and no official Rust image, so it cross-compiles through
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild): zig supplies a
+C cross toolchain for every target, which plain `rustup target add` does not,
+and which any crate carrying C needs. Go cross-compiles on its own with
+`CGO_ENABLED=0`.
 
 ## Source kinds
 
@@ -85,9 +126,12 @@ sha256 = "a31bd088..."
 to     = "LICENSE"
 ```
 
-The old `amdgpu_top` recipe fetched `onelf` from `latest`, which meant its
-output could change without the recipe changing. That is exactly the class of
-problem this repository exists to remove.
+`[[extra]]` is only for the repackaging case. A package built from a git commit
+already has its licence in the source tree, and the commit pin covers it.
+
+The hash on a licence is about determinism rather than security: the file ships
+inside the archive, so unpinned bytes would change the artifact's hash and
+break the rebuild check for a reason nobody could see in the recipe.
 
 ## Usage
 
@@ -98,8 +142,8 @@ python3 build.py eza --host x86_64-linux
 Produces `dist/<name>-<version>-<host>.tar.gz` and prints its sha256, which is
 the value that gets pinned in soarpkgs.
 
-Requires `podman` (or `--runtime docker`) and `git`. Everything else lives in
-the pinned image.
+Requires `podman` (or `--runtime docker`), `git`, and Python 3.11+. Everything
+else lives in the pinned image.
 
 ## Adding a package
 
@@ -134,10 +178,15 @@ run = """
 cargo build --release --locked --target "$TARGET"
 """
 
+[verify]
+run = ["--version"]
+
 [artifact]
 "target/${target}/release/eza" = "eza"
 "LICENSE.txt"                  = "LICENSE"
 ```
+
+`deps` defaults to `apk`; set `deps_via = "apt"` for a Debian-based image.
 
 Note that `deps`, `image` and `hosts` must appear **before** any `[build.x]`
 sub-table: TOML assigns bare keys to whichever table precedes them, so a `deps`

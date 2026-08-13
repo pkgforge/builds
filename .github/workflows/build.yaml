@@ -77,29 +77,9 @@ jobs:
         id: build
         run: python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
 
-      # The point of pinning everything is that a second run agrees. If it
-      # does not, the definition is not yet reproducible and that should be
-      # visible rather than discovered by a third party later.
-      - name: Rebuild and compare
-        id: repro
-        run: |
-          mv dist/*.tar.gz /tmp/first.tar.gz
-          # build.py clears its own work directory, which the build container
-          # may have written as root.
-          rm -rf dist
-          python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
-          if cmp -s /tmp/first.tar.gz dist/*.tar.gz; then
-            echo "reproducible=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ matrix.job.package }} ${{ matrix.job.host }} reproduces byte-for-byte"
-          else
-            echo "reproducible=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::${{ matrix.job.package }} ${{ matrix.job.host }} is NOT reproducible"
-          fi
-
       # A version is published once. Rebuilding an existing tag would either
       # be a no-op or quietly replace bytes somebody has already pinned, so
-      # the tag's absence is what marks a build as new. A build that does not
-      # reproduce is held back for a human rather than published with a note.
+      # the tag's absence is what marks a build as new.
       - name: Decide whether to publish
         id: gate
         env:
@@ -112,16 +92,13 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::notice::$tag already published, skipping"
             echo "publish=false" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.repro.outputs.reproducible }}" != "true" ]; then
-            echo "::warning::$tag is not reproducible, not publishing"
-            echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
       # Publishing is confined to main. A push to an update PR branch still
-      # builds and runs the reproducibility check, but a release is cut only
-      # once the bump has been reviewed and merged. Manual dispatch overrides.
+      # builds, but a release is cut only once the bump has been reviewed and
+      # merged. Manual dispatch overrides.
       - name: Attest provenance
         if: (steps.gate.outputs.publish == 'true' && github.ref == 'refs/heads/main') || inputs.publish
         uses: actions/attest-build-provenance@v3
@@ -135,7 +112,7 @@ jobs:
         run: |
           tag="${{ steps.gate.outputs.tag }}"
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "$tag" --notes "Reproducible: ${{ steps.repro.outputs.reproducible }}"
+            gh release create "$tag" --title "$tag" --notes "Built from a pinned source, toolchain and target."
           gh release upload "$tag" dist/*.tar.gz --clobber
 
       - name: Summary
@@ -145,6 +122,5 @@ jobs:
             echo
             echo '```'
             sha256sum dist/*.tar.gz
-            echo "reproducible: ${{ steps.repro.outputs.reproducible }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

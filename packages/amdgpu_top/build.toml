@@ -6,17 +6,12 @@ license     = ["MIT"]
 maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
 reason      = "upstream binary is dynamically linked; needs its libraries bundled to run anywhere"
 
-# Not a git build: this repackages an upstream release binary, so the source is
-# the artifact itself, pinned by hash.
 [source]
 url     = "https://github.com/Umio-Yasuno/amdgpu_top/releases/download/v0.11.5/amdgpu_top-0.11.5-x86_64-unknown-linux-gnu.tar.gz"
 sha256  = "5efd0b981d045096530d71536c02373d579f438e8bc7fa525fd7f031be326b54"
 version = "0.11.5"
-# No commit to date this from, so it is stated rather than derived.
 epoch   = 1735689600
 
-# Build tools are inputs too. The old recipe fetched onelf from "latest",
-# which meant the result could change without this file changing.
 [[tool]]
 name   = "onelf"
 url    = "https://github.com/QaidVoid/onelf/releases/download/0.3.0/onelf-x86_64-linux"
@@ -38,8 +33,6 @@ onelf bundle-libs ./out --from-binary ./amdgpu_top --strip \
 onelf pack ./out -o ./amdgpu_top.onelf --command bin/amdgpu_top --level 22
 """
 
-# The upstream tarball ships the binary alone, so the licence is fetched
-# separately and pinned like any other input.
 [[extra]]
 url    = "https://raw.githubusercontent.com/Umio-Yasuno/amdgpu_top/v0.11.5/LICENSE"
 sha256 = "a31bd0886fc3ca7b6f877065bd0ea67ea592783dceeb653f58bbd2bbefaba53b"

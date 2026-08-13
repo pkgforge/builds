@@ -1,0 +1,39 @@
+[pkg]
+name        = "yazi"
+description = "Blazing fast terminal file manager written in Rust, based on async I/O"
+homepage    = ["https://github.com/sxyazi/yazi"]
+license     = ["MIT"]
+maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
+
+reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
+
+[source]
+git     = "https://github.com/sxyazi/yazi"
+commit  = "aa526434f00bb44e2e902d9a4ac5f810da1018b9"
+version = "26.5.6"
+
+[build]
+image = "ghcr.io/rust-cross/cargo-zigbuild@sha256:b8364c2c60cdcc9b95c402d17654bff517410926a35678bd89dd924b8158d6ae"
+hosts = ["riscv64-linux"]
+
+[build.target]
+riscv64-linux = "riscv64gc-unknown-linux-musl"
+
+[build.env]
+RUSTUP_TOOLCHAIN = "1.95.0"
+RUSTFLAGS = "-C target-feature=+crt-static"
+
+[build.script]
+run = """
+CARGO_HOME=/usr/local/cargo rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+  --profile minimal --no-self-update --target "$TARGET"
+cargo zigbuild --release --locked --target "$TARGET"
+"""
+
+[verify]
+run = ["--version"]
+
+[artifact]
+"target/${target}/release/yazi" = "yazi"
+"target/${target}/release/ya"   = "ya"
+"LICENSE"                       = "LICENSE"
