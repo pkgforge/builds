@@ -1,0 +1,37 @@
+[pkg]
+name        = "alist"
+description = "A file list/WebDAV program that supports multiple storages"
+homepage    = ["https://github.com/AlistGo/alist"]
+license     = ["AGPL-3.0-or-later"]
+maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
+
+reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
+
+[source]
+git     = "https://github.com/AlistGo/alist"
+commit  = "843d9dc8149126976b2625911e45a4d3ffd6f2f5"
+version = "3.63.0"
+
+[build]
+image = "docker.io/library/golang@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2"
+hosts = ["riscv64-linux"]
+
+[build.target]
+riscv64-linux = "riscv64"
+
+[build.env]
+CGO_ENABLED = "0"
+GOOS = "linux"
+GOFLAGS = "-trimpath"
+
+[build.script]
+run = """
+GOARCH="$TARGET" go build -ldflags="-s -w" -o alist .
+"""
+
+[verify]
+run = ["version"]
+
+[artifact]
+"alist"   = "alist"
+"LICENSE" = "LICENSE"

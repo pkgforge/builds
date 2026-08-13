@@ -1,0 +1,38 @@
+[pkg]
+name        = "bottom"
+description = "A customizable cross-platform graphical process/system monitor for the terminal"
+homepage    = ["https://github.com/ClementTsang/bottom"]
+license     = ["MIT"]
+maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
+
+reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
+
+[source]
+git     = "https://github.com/ClementTsang/bottom"
+commit  = "6f3b62851eba9c27da4dcfc9f4edc8b9531f2d30"
+version = "0.14.7"
+
+[build]
+image = "ghcr.io/rust-cross/cargo-zigbuild@sha256:b8364c2c60cdcc9b95c402d17654bff517410926a35678bd89dd924b8158d6ae"
+hosts = ["riscv64-linux"]
+
+[build.target]
+riscv64-linux = "riscv64gc-unknown-linux-musl"
+
+[build.env]
+RUSTUP_TOOLCHAIN = "1.95.0"
+RUSTFLAGS = "-C target-feature=+crt-static"
+
+[build.script]
+run = """
+CARGO_HOME=/usr/local/cargo rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+  --profile minimal --no-self-update --target "$TARGET"
+cargo zigbuild --release --locked --target "$TARGET"
+"""
+
+[verify]
+run = ["--version"]
+
+[artifact]
+"target/${target}/release/btm" = "btm"
+"LICENSE"                      = "LICENSE"

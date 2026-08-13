@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import gzip
@@ -23,6 +24,14 @@ from pathlib import Path
 # Build inside a fixed path: absolute paths leak into debug info and some
 # binaries embed them, which breaks reproducibility across machines.
 WORKDIR = "/build"
+
+# Image used only to run a freshly built binary. It never contributes bytes to
+# an artifact, so unlike the toolchain it does not need pinning by digest.
+QEMU_IMAGE = "docker.io/library/debian:stable-slim"
+
+# e_machine values, keyed by the host triple this repository builds for.
+ELF_MACHINE = {"x86_64-linux": 0x3E, "aarch64-linux": 0xB7, "riscv64-linux": 0xF3}
+QEMU_ARCH = {"x86_64-linux": "x86_64", "aarch64-linux": "aarch64", "riscv64-linux": "riscv64"}
 
 
 def run(cmd, **kw):
@@ -106,6 +115,63 @@ def fetch_source(spec: dict, dest: Path) -> None:
         sys.exit(f"source commit mismatch: wanted {spec['commit']}, got {got}")
 
 
+def elf_header(blob: bytes):
+    """(e_machine, PT_INTERP) for an ELF image, or None if it is not one.
+
+    A dynamic loader in the header is the whole question: soar installs a
+    binary onto a host whose libc it knows nothing about.
+    """
+    if len(blob) < 64 or blob[:4] != b"\x7fELF" or blob[4] != 2:
+        return None
+    end = "<" if blob[5] == 1 else ">"
+    machine, = struct.unpack_from(end + "H", blob, 18)
+    phoff, = struct.unpack_from(end + "Q", blob, 32)
+    phentsize, phnum = struct.unpack_from(end + "HH", blob, 54)
+    for i in range(phnum):
+        off = phoff + i * phentsize
+        p_type, = struct.unpack_from(end + "I", blob, off)
+        if p_type == 3:  # PT_INTERP
+            start, = struct.unpack_from(end + "Q", blob, off + 8)
+            size, = struct.unpack_from(end + "Q", blob, off + 32)
+            return machine, blob[start:start + size].rstrip(b"\0").decode()
+    return machine, None
+
+
+def verify(cfg: dict, stage: Path, host: str, runtime: str) -> None:
+    """Check the staged binaries before anything publishes them.
+
+    Building for a host nobody can run here is exactly when a broken artifact
+    goes unnoticed, so this runs the binary under emulation rather than
+    trusting that it compiled.
+    """
+    smoke = (cfg.get("verify") or {}).get("run")
+    for path in sorted(stage.iterdir()):
+        header = elf_header(path.read_bytes())
+        if header is None:
+            continue
+        machine, interp = header
+        if machine != ELF_MACHINE[host]:
+            sys.exit(f"{path.name}: built for e_machine {machine:#x}, expected {host}")
+        if interp is not None:
+            sys.exit(f"{path.name}: dynamically linked against {interp}, expected static")
+        print(f"  {path.name}: static {host}")
+
+        if not smoke:
+            continue
+        # qemu-user runs the binary without the host having to be that arch,
+        # and without registering binfmt on whatever machine this is.
+        qemu = f"qemu-{QEMU_ARCH[host]}-static"
+        run([
+            runtime, "run", "--rm", "-v", f"{stage.resolve()}:/stage:z", QEMU_IMAGE,
+            "sh", "-euc",
+            "export DEBIAN_FRONTEND=noninteractive\n"
+            "apt-get update -qq >/dev/null 2>&1\n"
+            "apt-get install -y -qq qemu-user-static >/dev/null 2>&1\n"
+            f"{qemu} /stage/{path.name} {' '.join(smoke)}",
+        ])
+        print(f"  {path.name}: runs under {qemu}")
+
+
 def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> Path:
     name = cfg["pkg"]["name"]
     src = cfg["source"]
@@ -186,7 +252,12 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
         if not path.is_file():
             sys.exit(f"artifact not produced: {frm} -> {path}")
         shutil.copy2(path, stage / to)
-        (stage / to).chmod(0o755 if to == name else 0o644)
+        # Decided by content, not by name: a package whose binary is named
+        # something else would otherwise be published unexecutable.
+        is_elf = (stage / to).open("rb").read(4) == b"\x7fELF"
+        (stage / to).chmod(0o755 if is_elf else 0o644)
+
+    verify(cfg, stage, host, runtime)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     archive = out_dir / f"{name}-{src['version']}-{host}.tar.gz"

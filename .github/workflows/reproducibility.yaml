@@ -1,0 +1,99 @@
+name: Reproducibility
+
+# Rebuilds packages that are already published and compares against the bytes
+# in the release. Rebuilding twice in the same job, minutes apart on one
+# runner, only ever caught timestamps and paths; doing it later, on a
+# different runner, is what actually tests the claim.
+#
+# It is deliberately off the publish path. A build that fails to reproduce is
+# something to investigate, not a reason to block a release nobody has pinned
+# yet, and a CI flake here costs a retry rather than a delayed package.
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Single package to check; empty = all published'
+        type: string
+        default: ''
+
+concurrency:
+  group: reproducibility
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.list.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY: ${{ inputs.package }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, pathlib, subprocess, sys, tomllib
+          only = os.environ.get("ONLY") or ""
+          jobs = []
+          for path in sorted(pathlib.Path("packages").glob("*/build.toml")):
+              name = path.parent.name
+              if only and name != only:
+                  continue
+              cfg = tomllib.load(open(path, "rb"))
+              tag = f"{name}-{cfg['source']['version']}"
+              # Only published versions have bytes to compare against.
+              if subprocess.run(["gh", "release", "view", tag],
+                                capture_output=True).returncode != 0:
+                  continue
+              for host in cfg["build"]["hosts"]:
+                  jobs.append({"package": name, "host": host, "tag": tag,
+                               "runner": "ubuntu-24.04-arm" if host.startswith("aarch64")
+                                         else "ubuntu-latest"})
+          print("jobs=" + json.dumps(jobs))
+          EOF
+
+  check:
+    needs: matrix
+    if: needs.matrix.outputs.jobs != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJson(needs.matrix.outputs.jobs) }}
+    runs-on: ${{ matrix.job.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Rebuild
+        run: python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
+
+      - name: Compare against the published artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="${{ matrix.job.package }}-$(python3 -c "import tomllib;print(tomllib.load(open('packages/${{ matrix.job.package }}/build.toml','rb'))['source']['version'])")-${{ matrix.job.host }}.tar.gz"
+          gh release download "${{ matrix.job.tag }}" --pattern "$asset" --dir /tmp/published
+
+          built=$(sha256sum "dist/$asset" | cut -d' ' -f1)
+          published=$(sha256sum "/tmp/published/$asset" | cut -d' ' -f1)
+          {
+            echo "### ${{ matrix.job.package }} (${{ matrix.job.host }})"
+            echo
+            echo '```'
+            echo "published $published"
+            echo "rebuilt   $built"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$built" = "$published" ]; then
+            echo "::notice::${{ matrix.job.tag }} ${{ matrix.job.host }} reproduces byte-for-byte"
+          else
+            echo "::error::${{ matrix.job.tag }} ${{ matrix.job.host }} does NOT reproduce"
+            exit 1
+          fi

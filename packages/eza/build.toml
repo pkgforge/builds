@@ -5,31 +5,19 @@ homepage    = ["https://github.com/eza-community/eza"]
 license     = ["MIT"]
 maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
 
-# Why this is built rather than pinned from upstream. Every package here needs
-# a reason, because the alternative is always preferable when it exists.
 reason = "upstream ships gnu-linked binaries only; soar needs static musl"
 
 [source]
 git = "https://github.com/eza-community/eza"
-# Pinned to a commit. Tags are mutable and a retagged release would otherwise
-# change what we build without changing this file.
 commit  = "98442ab17c2c3738701b62a7e060b1431ae2d6ea"
 version = "0.23.5"
 
 [build]
-# Pinned by digest, not by tag, so the toolchain cannot move underneath us.
 image = "docker.io/library/rust@sha256:b4b54b176a74db7e5c68fdfe6029be39a02ccbcfe72b6e5a3e18e2c61b57ae26"
 hosts = ["x86_64-linux", "aarch64-linux"]
 
-# Packages the toolchain image lacks. Installed before the script runs.
-#
-# These are NOT version-pinned, which is the one hole in this build's
-# reproducibility: an alpine package update can change the result. Closing it
-# means building and pinning our own base image, tracked as a follow-up.
 deps = ["zlib-dev", "musl-dev"]
 
-# Host triple to Rust target. Explicit rather than derived, since the mapping
-# is toolchain-specific.
 [build.target]
 x86_64-linux  = "x86_64-unknown-linux-musl"
 aarch64-linux = "aarch64-unknown-linux-musl"
@@ -43,7 +31,6 @@ rustup target add "$TARGET"
 cargo build --release --locked --target "$TARGET"
 """
 
-# Path inside the build tree to name in the published archive.
 [artifact]
 "target/${target}/release/eza" = "eza"
 "LICENSE.txt"                  = "LICENSE"
