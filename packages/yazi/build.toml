@@ -9,8 +9,8 @@ reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
 
 [source]
 git     = "https://github.com/sxyazi/yazi"
-commit  = "aa526434f00bb44e2e902d9a4ac5f810da1018b9"
-version = "26.5.6"
+commit  = "1f3588d6f4ef80122089db70e670a0eb757f20fe"
+version = "26.8.15"
 
 [build]
 image = "ghcr.io/rust-cross/cargo-zigbuild@sha256:b8364c2c60cdcc9b95c402d17654bff517410926a35678bd89dd924b8158d6ae"

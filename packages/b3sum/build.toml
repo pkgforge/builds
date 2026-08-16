@@ -8,8 +8,8 @@ reason      = "upstream publishes an x86_64 binary only; aarch64 has none"
 
 [source]
 git     = "https://github.com/BLAKE3-team/BLAKE3"
-commit  = "93a431c78a52d7ccf0f366f106467f5070e6075e"
-version = "1.8.5"
+commit  = "77b257eee7da5cd608eaf6be8343d3a4c9776af2"
+version = "1.8.6"
 
 [build]
 image = "docker.io/library/rust@sha256:b4b54b176a74db7e5c68fdfe6029be39a02ccbcfe72b6e5a3e18e2c61b57ae26"
