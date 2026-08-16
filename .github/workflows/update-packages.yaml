@@ -8,7 +8,10 @@ name: Update Packages
 
 on:
   schedule:
-    - cron: '0 6 */3 * *'
+    # Daily, and ahead of soarpkgs' own update at 06:00. soarpkgs takes its
+    # version for these packages from our releases, so it can only move once
+    # we have built and published one.
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       packages:
