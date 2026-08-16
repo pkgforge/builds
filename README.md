@@ -77,6 +77,28 @@ run = ["--version"]
 A binary that is dynamically linked, built for the wrong machine, or unable to
 start fails the build rather than reaching a release.
 
+## Versions, and who follows whom
+
+For a package served partly from here, soarpkgs takes its version from *our*
+release rather than from upstream:
+
+```toml
+[update]
+strategy   = "github-releases"
+repo       = "pkgforge/builds"
+tag-prefix = "nushell-"
+```
+
+Otherwise the two repositories race. soarpkgs resolves upstream's newest
+version, writes a URL pointing at a release here that does not exist yet, and
+its update fails until we catch up. Following our tag means the version it
+pins is one both sides have published, and the update workflow cannot outrun
+the build.
+
+The cost is that these packages reach soarpkgs only once built here, so this
+repository updates daily and ahead of soarpkgs' own run. `[pkg] src` keeps
+pointing at the real upstream, so provenance does not move with the version.
+
 ## Architectures
 
 `hosts` lists what a package is built for, and a package is built only for the
