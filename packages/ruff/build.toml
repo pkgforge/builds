@@ -9,8 +9,8 @@ reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
 
 [source]
 git     = "https://github.com/astral-sh/ruff"
-commit  = "b0e47022cfce4f3594aa26d15ea792681430b6f6"
-version = "0.16.3"
+commit  = "11c76bf48fdac06b2f240cba502eda96da4dce77"
+version = "0.16.4"
 
 [build]
 image = "ghcr.io/rust-cross/cargo-zigbuild@sha256:b8364c2c60cdcc9b95c402d17654bff517410926a35678bd89dd924b8158d6ae"
