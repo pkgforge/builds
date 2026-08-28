@@ -111,8 +111,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ steps.gate.outputs.tag }}"
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "$tag" --notes "Built from a pinned source, toolchain and target."
+          # A package's hosts publish to one shared tag and race to get here.
+          # Creating the release is therefore best-effort: whichever host wins
+          # creates it, and the loser's create fails because the tag now
+          # exists, which is fine as long as it does exist. Verify that rather
+          # than swallowing the error, so a genuine create failure still stops
+          # the job. Each host's artifact name is unique, so the per-host
+          # upload never disturbs another arch's asset.
+          gh release create "$tag" --title "$tag" \
+            --notes "Built from a pinned source, toolchain and target." 2>/dev/null \
+            || gh release view "$tag" >/dev/null
           gh release upload "$tag" dist/*.tar.gz --clobber
 
       - name: Summary
