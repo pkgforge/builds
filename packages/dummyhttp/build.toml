@@ -20,7 +20,7 @@ hosts = ["riscv64-linux"]
 riscv64-linux = "riscv64gc-unknown-linux-musl"
 
 [build.env]
-RUSTUP_TOOLCHAIN = "1.95.0"
+RUSTUP_TOOLCHAIN = "stable"
 RUSTFLAGS = "-C target-feature=+crt-static"
 
 [build.script]
