@@ -29,7 +29,7 @@ jobs:
     outputs:
       jobs: ${{ steps.plan.outputs.jobs }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: plan
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
@@ -71,7 +71,7 @@ jobs:
         job: ${{ fromJson(needs.matrix.outputs.jobs) }}
     runs-on: ${{ matrix.job.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build
         id: build
