@@ -251,7 +251,9 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
     for e in cfg.get("extra") or []:
         fetch_url(e["url"], e["sha256"], repo / e["to"])
 
-    # Collect declared artifacts under their published names.
+    # Collect declared artifacts under their published names. A `from` with
+    # glob metacharacters publishes every match, and `${name}` in the `to`
+    # stands for the matched file's name.
     stage = work / "stage"
     if stage.exists():
         shutil.rmtree(stage)
@@ -259,10 +261,28 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
     published = dict(cfg["artifact"])
     for e in cfg.get("extra") or []:
         published[e["to"]] = e["to"]
+    staged: list[tuple[Path, str]] = []
     for frm, to in published.items():
-        path = repo / frm.replace("${target}", target)
-        if not path.is_file():
-            sys.exit(f"artifact not produced: {frm} -> {path}")
+        pat = frm.replace("${target}", target)
+        if "*" not in pat and "?" not in pat and "[" not in pat:
+            path = repo / pat
+            if not path.is_file():
+                sys.exit(f"artifact not produced: {frm} -> {path}")
+            staged.append((path, to.replace("${target}", target)))
+            continue
+        matches = sorted(p for p in repo.glob(pat) if p.is_file())
+        if not matches:
+            sys.exit(f"artifact glob matched nothing: {frm}")
+        for path in matches:
+            staged.append((
+                path,
+                to.replace("${target}", target).replace("${name}", path.name),
+            ))
+    seen: dict[str, Path] = {}
+    for path, to in staged:
+        if to in seen:
+            sys.exit(f"artifact collision at {to}: {seen[to]} and {path}")
+        seen[to] = path
         # A `to` may carry directories ("pkg/bin/tool"), mirroring how
         # multi-binary packages want their tree laid out in the archive.
         (stage / to).parent.mkdir(parents=True, exist_ok=True)

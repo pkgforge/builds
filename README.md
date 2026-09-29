@@ -208,6 +208,10 @@ run = ["--version"]
 "LICENSE.txt"                  = "LICENSE"
 ```
 
+A `from` with glob metacharacters publishes every match, and `${name}` in the
+destination stands for the matched file's name, so a multi-binary archive is
+one line rather than one entry per file.
+
 `deps` defaults to `apk`; set `deps_via = "apt"` for a Debian-based image.
 
 Note that `deps`, `image` and `hosts` must appear **before** any `[build.x]`

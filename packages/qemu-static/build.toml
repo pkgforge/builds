@@ -1,0 +1,27 @@
+[pkg]
+name        = "qemu-static"
+description = "QEMU user mode emulation binaries"
+homepage    = ["https://codeberg.org/ziglang/qemu-static"]
+license     = ["GPL-2.0"]
+maintainer  = ["QaidVoid (contact@qaidvoid.dev)"]
+
+reason = "upstream publishes on codeberg, which is frequently unreachable; soarpkgs needs a github mirror"
+
+[source]
+url     = "https://codeberg.org/ziglang/qemu-static/releases/download/11.1.1.1/qemu-linux-x86_64-11.1.1.1.tar.xz"
+sha256  = "d5f244f642d4e3dfb0dca09bf9629707509fd796da21ca183b4f096e04c65a89"
+version = "11.1.1.1"
+epoch   = 1790430036
+
+[build]
+image = "docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
+hosts = ["x86_64-linux"]
+
+[build.target]
+x86_64-linux = "x86_64-linux"
+
+[build.script]
+run = "# repackaged verbatim; the archive is only restaged and checked"
+
+[artifact]
+"qemu-linux-x86_64-*/bin/qemu-*" = "qemu-static/bin/${name}-static"
