@@ -54,15 +54,27 @@ def source_epoch(repo: Path) -> str:
     return out.stdout.strip()
 
 
-def fetch_url(url: str, sha256: str, dest: Path) -> None:
-    """Download and verify. A build input is pinned the same way a package is."""
+def fetch_url(url: str, sha256: str, dest: Path, attempts: int = 3) -> None:
+    """Download and verify. A build input is pinned the same way a package is.
+
+    Transfers fail and truncate, and some forges hang up mid-file, so both
+    network errors and a hash mismatch are retried: the pin was reviewed when
+    it was written, and a mismatch on the day means a bad copy, not a lie.
+    """
     import urllib.request
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=300) as r, open(dest, "wb") as fh:
-        shutil.copyfileobj(r, fh)
-    got = hashlib.sha256(dest.read_bytes()).hexdigest()
-    if got != sha256:
-        sys.exit(f"hash mismatch for {url}\n  want {sha256}\n  got  {got}")
+    got = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=300) as r, open(dest, "wb") as fh:
+                shutil.copyfileobj(r, fh)
+            got = hashlib.sha256(dest.read_bytes()).hexdigest()
+            if got == sha256:
+                return
+            print(f"attempt {attempt}/{attempts}: bad hash for {url}", file=sys.stderr)
+        except OSError as e:
+            print(f"attempt {attempt}/{attempts}: {url}: {e}", file=sys.stderr)
+    sys.exit(f"hash mismatch for {url}\n  want {sha256}\n  got  {got}")
 
 
 def remove_tree(path: Path, runtime: str, image: str) -> None:
@@ -145,7 +157,7 @@ def verify(cfg: dict, stage: Path, host: str, runtime: str) -> None:
     trusting that it compiled.
     """
     smoke = (cfg.get("verify") or {}).get("run")
-    for path in sorted(stage.iterdir()):
+    for path in sorted(p for p in stage.rglob("*") if p.is_file()):
         header = elf_header(path.read_bytes())
         if header is None:
             continue
@@ -251,6 +263,9 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
         path = repo / frm.replace("${target}", target)
         if not path.is_file():
             sys.exit(f"artifact not produced: {frm} -> {path}")
+        # A `to` may carry directories ("pkg/bin/tool"), mirroring how
+        # multi-binary packages want their tree laid out in the archive.
+        (stage / to).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, stage / to)
         # Decided by content, not by name: a package whose binary is named
         # something else would otherwise be published unexecutable.
@@ -268,8 +283,8 @@ def build(cfg: dict, pkg_dir: Path, host: str, out_dir: Path, runtime: str) -> P
     with open(archive, "wb") as raw:
         with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as gz:
             with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tf:
-                for path in sorted(stage.iterdir()):
-                    info = tf.gettarinfo(path, arcname=path.name)
+                for path in sorted(p for p in stage.rglob("*") if p.is_file()):
+                    info = tf.gettarinfo(path, arcname=path.relative_to(stage).as_posix())
                     info.mtime = int(epoch)
                     info.uid = info.gid = 0
                     info.uname = info.gname = ""

@@ -13,27 +13,27 @@ replaced the bytes in place, and that should be visible before it is merged.
 Usage:
   update.py [package ...]   # no args = every package
 """
-import calendar
 import hashlib
 import json
 import os
 import sys
-import time
 import tomllib
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 API = "https://api.github.com"
+CODEBERG_API = "https://codeberg.org/api/v1"
 
 
-def api(path: str):
-    """GET a GitHub API path as JSON, or None on 404.
+def api(path: str, base: str = API):
+    """GET a JSON API path, or None on 404.
 
     A token lifts the anonymous rate limit and is passed when present; the
     calls are public reads, so it is optional for a local run.
     """
-    req = urllib.request.Request(f"{API}/{path}")
+    req = urllib.request.Request(f"{base}/{path}")
     req.add_header("Accept", "application/vnd.github+json")
     token = os.environ.get("GITHUB_TOKEN")
     if token:
@@ -44,7 +44,7 @@ def api(path: str):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
-        sys.exit(f"github api {path}: {e}")
+        sys.exit(f"api {base}/{path}: {e}")
 
 
 def semver(name: str):
@@ -60,23 +60,25 @@ def semver(name: str):
         return None
 
 
-def latest(owner: str, repo: str):
+def latest(base: str, owner: str, repo: str):
     """Newest upstream version as ``(tag, version, epoch)``.
 
     A published release is preferred: it excludes prereleases and drafts, so
     the latest release is a deliberate one and its date is known. Repos that
     only tag fall back to the highest semver tag, with no date to derive.
     """
-    rel = api(f"repos/{owner}/{repo}/releases/latest")
+    rel = api(f"repos/{owner}/{repo}/releases/latest", base)
     if rel:
         tag = rel["tag_name"]
         published = rel.get("published_at")
-        epoch = (calendar.timegm(
-            time.strptime(published, "%Y-%m-%dT%H:%M:%SZ"))
+        # GitHub stamps UTC with a literal Z; Forgejo carries a UTC offset.
+        # fromisoformat takes both apart into a comparable instant.
+        epoch = (int(datetime.fromisoformat(
+            published.replace("Z", "+00:00")).timestamp())
             if published else None)
         return tag, tag.lstrip("v"), epoch
 
-    tags = api(f"repos/{owner}/{repo}/tags?per_page=100") or []
+    tags = api(f"repos/{owner}/{repo}/tags?per_page=100", base) or []
     best = None
     for t in tags:
         v = semver(t["name"])
@@ -92,17 +94,23 @@ def fetch_sha256(url: str) -> str:
         return hashlib.sha256(r.read()).hexdigest()
 
 
-def slug(cfg: dict) -> tuple[str, str]:
-    """The ``owner/repo`` to query for a package.
+def slug(cfg: dict) -> tuple[str, str, str]:
+    """The API base and ``owner/repo`` to query for a package.
 
     A git source names its own repo; a repackaged release does not, so its
-    homepage stands in.
+    homepage stands in. Codeberg runs Forgejo, whose API mirrors the GitHub
+    release shape under a different base URL.
     """
     src = cfg["source"]
-    url = src["git"] if "git" in src else cfg["pkg"]["homepage"][0]
-    owner, repo = url.rstrip("/").removeprefix(
-        "https://github.com/").split("/")[:2]
-    return owner, repo.removesuffix(".git")
+    url = (src["git"] if "git" in src else cfg["pkg"]["homepage"][0]).rstrip("/")
+    for host, base in (
+        ("https://github.com/", API),
+        ("https://codeberg.org/", CODEBERG_API),
+    ):
+        if url.startswith(host):
+            owner, repo = url[len(host):].split("/")[:2]
+            return base, owner, repo.removesuffix(".git")
+    sys.exit(f"unsupported forge: {url}")
 
 
 def update(pkg_dir: Path) -> bool:
@@ -117,8 +125,8 @@ def update(pkg_dir: Path) -> bool:
     src = cfg["source"]
     cur = src["version"]
 
-    owner, repo = slug(cfg)
-    tag, ver, epoch = latest(owner, repo)
+    base, owner, repo = slug(cfg)
+    tag, ver, epoch = latest(base, owner, repo)
     if semver(ver) is None or semver(cur) is None or semver(ver) <= semver(cur):
         print(f"{pkg_dir.name}: {cur} is current")
         return False
@@ -128,7 +136,7 @@ def update(pkg_dir: Path) -> bool:
     text = path.read_text().replace(cur, ver)
 
     if "git" in src:
-        commit = api(f"repos/{owner}/{repo}/commits/{tag}")
+        commit = api(f"repos/{owner}/{repo}/commits/{tag}", base)
         if not commit:
             sys.exit(f"{pkg_dir.name}: tag {tag} has no commit")
         text = text.replace(src["commit"], commit["sha"])
