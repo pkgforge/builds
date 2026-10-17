@@ -34,13 +34,42 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Resolve upstream versions
+        id: update
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 update.py ${{ inputs.packages }}
 
       - name: Summarise changes
         id: diff
+        env:
+          FAILURES: ${{ steps.update.outputs.failures }}
         run: |
+          # The PR body lives outside the worktree so create-pull-request can
+          # never sweep it into the commit it assembles.
+          {
+            echo "Automated version bump. Each changed file pins a resolved commit or"
+            echo "release hash at the latest upstream version."
+            echo
+            echo "Review the hashes: a changed hash on an *unchanged* version means"
+            echo "upstream replaced an artifact in place, which is worth"
+            echo "investigating before merging."
+            if [ -n "$FAILURES" ]; then
+              echo
+              echo "## Packages that failed to update"
+              echo
+              echo "These kept their existing pin and need a look:"
+              echo
+              echo "$FAILURES"
+            fi
+          } > "$RUNNER_TEMP/pr-body.md"
+          if [ -n "$FAILURES" ]; then
+            {
+              echo "## Packages that failed to update"
+              echo
+              echo "$FAILURES"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           git add -A packages
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -62,12 +91,18 @@ jobs:
           branch: automated/package-updates
           title: 'chore: update pinned package versions'
           commit-message: 'chore: update pinned package versions'
-          body: |
-            Automated version bump. Each changed file pins a resolved commit or
-            release hash at the latest upstream version.
-
-            Review the hashes: a changed hash on an *unchanged* version means
-            upstream replaced an artifact in place, which is worth
-            investigating before merging.
+          body-path: ${{ runner.temp }}/pr-body.md
           labels: automated
           delete-branch: true
+          add-paths: packages
+
+      # A broken package must not stop the other updates or the pull request,
+      # but the run should not look healthy while a pin cannot be resolved.
+      # This is deliberately the last step: the PR above is already open.
+      - name: Fail on broken packages
+        if: steps.update.outputs.failed == 'true'
+        env:
+          FAILURES: ${{ steps.update.outputs.failures }}
+        run: |
+          printf '%s\n' "$FAILURES"
+          exit 1

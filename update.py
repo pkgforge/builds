@@ -4,7 +4,8 @@
 Every package pins its source one of two ways: a git ``commit`` at a release
 tag, or a released ``url`` with its ``sha256``. This walks each definition,
 asks the upstream forge for its newest version, and rewrites only the pinned
-lines when there is a newer one.
+lines when there is a newer one. A package that cannot be resolved is
+reported and skipped; it never stops the others.
 
 The diff for a bump is a handful of lines a human can actually read, which is
 the point. A changed hash on an otherwise unchanged artifact means upstream
@@ -17,6 +18,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -27,24 +29,41 @@ API = "https://api.github.com"
 CODEBERG_API = "https://codeberg.org/api/v1"
 
 
+class UpdateError(Exception):
+    """One package could not be resolved or pinned; never fatal to the run."""
+
+
 def api(path: str, base: str = API):
     """GET a JSON API path, or None on 404.
 
-    A token lifts the anonymous rate limit and is passed when present; the
-    calls are public reads, so it is optional for a local run.
+    A token lifts the anonymous rate limit on GitHub, and is sent nowhere
+    else: forges reject foreign tokens outright, so forwarding it to Codeberg
+    turns an anonymous read into a 401. Transient failures (unreachable host,
+    429, 5xx) are retried with a short backoff, since Codeberg in particular
+    drops connections; anything else raises UpdateError.
     """
-    req = urllib.request.Request(f"{base}/{path}")
-    req.add_header("Accept", "application/vnd.github+json")
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        sys.exit(f"api {base}/{path}: {e}")
+    last = None
+    for attempt in range(1, 4):
+        req = urllib.request.Request(f"{base}/{path}")
+        req.add_header("Accept", "application/vnd.github+json")
+        if base == API:
+            token = os.environ.get("GITHUB_TOKEN")
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            if e.code < 500 and e.code != 429:
+                raise UpdateError(f"{base}/{path}: {e}") from e
+            last = e
+        except urllib.error.URLError as e:
+            last = e
+        if attempt < 3:
+            time.sleep(2 * attempt)
+    raise UpdateError(f"{base}/{path}: {last}") from last
 
 
 def semver(name: str):
@@ -85,13 +104,35 @@ def latest(base: str, owner: str, repo: str):
         if v and (best is None or v > best[0]):
             best = (v, t["name"])
     if not best:
-        sys.exit(f"no release or semver tag for {owner}/{repo}")
+        raise UpdateError(f"no release or semver tag for {owner}/{repo}")
     return best[1], best[1].lstrip("v"), None
 
 
 def fetch_sha256(url: str) -> str:
-    with urllib.request.urlopen(url, timeout=300) as r:
-        return hashlib.sha256(r.read()).hexdigest()
+    """Hash a released artifact, retrying transient failures.
+
+    The Content-Length header, when the forge sends one, is checked so a
+    truncated transfer never lands in build.toml as a pin.
+    """
+    last = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(url, timeout=300) as r:
+                data = r.read()
+                want = r.headers.get("Content-Length")
+            if want and int(want) != len(data):
+                raise UpdateError(
+                    f"{url}: truncated transfer ({len(data)} of {want} bytes)")
+            return hashlib.sha256(data).hexdigest()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 and e.code != 429:
+                raise UpdateError(f"{url}: {e}") from e
+            last = e
+        except urllib.error.URLError as e:
+            last = e
+        if attempt < 3:
+            time.sleep(2 * attempt)
+    raise UpdateError(f"{url}: {last}") from last
 
 
 def slug(cfg: dict) -> tuple[str, str, str]:
@@ -110,7 +151,7 @@ def slug(cfg: dict) -> tuple[str, str, str]:
         if url.startswith(host):
             owner, repo = url[len(host):].split("/")[:2]
             return base, owner, repo.removesuffix(".git")
-    sys.exit(f"unsupported forge: {url}")
+    raise UpdateError(f"unsupported forge: {url}")
 
 
 def update(pkg_dir: Path) -> bool:
@@ -132,13 +173,13 @@ def update(pkg_dir: Path) -> bool:
         return False
 
     if cur not in path.read_text():
-        sys.exit(f"{pkg_dir.name}: version {cur} not found in build.toml")
+        raise UpdateError(f"{pkg_dir.name}: version {cur} not found in build.toml")
     text = path.read_text().replace(cur, ver)
 
     if "git" in src:
         commit = api(f"repos/{owner}/{repo}/commits/{tag}", base)
         if not commit:
-            sys.exit(f"{pkg_dir.name}: tag {tag} has no commit")
+            raise UpdateError(f"{pkg_dir.name}: tag {tag} has no commit")
         text = text.replace(src["commit"], commit["sha"])
     else:
         new_url = src["url"].replace(cur, ver)
@@ -153,14 +194,39 @@ def update(pkg_dir: Path) -> bool:
     return True
 
 
+def report(broken: list[tuple[str, str]]) -> None:
+    """Hand failures to the calling workflow, which decides what they mean.
+
+    Under GITHUB_OUTPUT they land in step outputs the workflow can put on the
+    pull request; a local run has already printed everything to stderr.
+    """
+    out = os.environ.get("GITHUB_OUTPUT")
+    if not out:
+        return
+    lines = "".join(f"- **{name}**: {msg}\n" for name, msg in broken)
+    with open(out, "a") as fh:
+        fh.write("failed=true\n")
+        fh.write(f"failures<<UPDATE_FAILURES_EOF\n{lines}UPDATE_FAILURES_EOF\n")
+
+
 def main() -> None:
     only = set(sys.argv[1:])
     dirs = sorted(p.parent for p in Path("packages").glob("*/build.toml"))
     if only:
         dirs = [d for d in dirs if d.name in only]
-    changed = [d.name for d in dirs if update(d)]
+    changed, broken = [], []
+    for d in dirs:
+        try:
+            if update(d):
+                changed.append(d.name)
+        except UpdateError as e:
+            broken.append((d.name, str(e)))
+            print(f"{d.name}: {e}", file=sys.stderr)
     if changed:
         print(f"\nupdated: {', '.join(changed)}")
+    if broken:
+        print(f"\nfailed: {', '.join(name for name, _ in broken)}", file=sys.stderr)
+        report(broken)
 
 
 if __name__ == "__main__":
