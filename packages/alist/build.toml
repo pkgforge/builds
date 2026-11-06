@@ -9,8 +9,8 @@ reason = "upstream ships riscv64 as gnu-linked only; soar needs static musl"
 
 [source]
 git     = "https://github.com/AlistGo/alist"
-commit  = "ea628f9a4fb2dcd1f400a4a3f91ccb59b3c1da69"
-version = "3.65.0"
+commit  = "92e745360766cce32564f94a468cb576f577d27e"
+version = "3.66.0"
 
 [build]
 image = "docker.io/library/golang@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2"
