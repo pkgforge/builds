@@ -32,7 +32,7 @@ jobs:
     outputs:
       jobs: ${{ steps.list.outputs.jobs }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: list
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,7 +68,7 @@ jobs:
         job: ${{ fromJson(needs.matrix.outputs.jobs) }}
     runs-on: ${{ matrix.job.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Rebuild
         run: python3 build.py "${{ matrix.job.package }}" --host "${{ matrix.job.host }}" --runtime docker
